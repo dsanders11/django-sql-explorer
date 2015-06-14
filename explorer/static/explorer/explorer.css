@@ -85,6 +85,7 @@
 .icon-cell {
     padding: 2px 0 0 45px;
     vertical-align: middle
+    text-align: center;
 }
 
 .icon-cell a {
@@ -109,4 +110,8 @@
 
 .indented {
     padding-left: 30px;
+}
+
+#editor #id_description {
+    resize: vertical;
 }
