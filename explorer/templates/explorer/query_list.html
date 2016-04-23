@@ -17,7 +17,7 @@
                 <tr>
                     <th>Query</th>
                     <th>Last Run</th>
-                    <th>CSV</th>
+                    <th class="text-center">CSV</th>
                 </tr>
             </thead>
             <tbody>
@@ -25,7 +25,7 @@
                 <tr>
                     <td><a href="{% url "query_detail" object.id %}">{{ object.title }}</a></td>
                     <td>{{ object.last_run_date|date:"SHORT_DATETIME_FORMAT" }}</td>
-                    <td>
+                    <td class="text-center">
                         <a href="{% url "query_download" object.id %}"><i class="glyphicon glyphicon-download"></i></a>
                     </td>
                 </tr>
@@ -51,10 +51,10 @@
                 {% if tasks_enabled %}
                   <th>Email</th>
                 {% endif %}
-                <th class="text-center">CSV</th>
+                <th>CSV</th>
                 {% if can_change %}
                     <th>Play</th>
-                    <th class="text-center">Delete</th>
+                    <th>Delete</th>
                 {% endif %}
                 <th>Run Count</th>
             </tr>
