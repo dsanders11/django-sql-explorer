@@ -1,8 +1,6 @@
 {% extends "explorer/base.html" %}
 {% load staticfiles %}
 
-{% load url from future %}
-
 {% block sql_explorer_navlinks %}
     {% if can_change %}
       <li><a href="{% url "query_create" %}">New Query</a></li>
