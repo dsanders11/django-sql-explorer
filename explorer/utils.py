@@ -1,13 +1,19 @@
+
+
 import functools
-import csv
-import cStringIO
-import json
+import sys
+PY3 = sys.version_info[0] == 3
+
+if PY3:
+    import csv
+else:
+    import unicodecsv as csv
 import re
 import string
-from time import time
 from explorer import app_settings
-from django.db import connections, connection, models, transaction, DatabaseError
+from django.db import connections, connection, DatabaseError
 from django.http import HttpResponse
+from six.moves import cStringIO
 import sqlparse
 
 EXPLORER_PARAM_TOKEN = "$$"
@@ -16,43 +22,13 @@ EXPLORER_PARAM_TOKEN = "$$"
 
 
 def passes_blacklist(sql):
-    clean = functools.reduce(lambda sql, term: sql.upper().replace(term, ""), app_settings.EXPLORER_SQL_WHITELIST, sql)
-    return not any(write_word in clean.upper() for write_word in app_settings.EXPLORER_SQL_BLACKLIST)
+    clean = functools.reduce(lambda sql, term: sql.upper().replace(term, ""), [t.upper() for t in app_settings.EXPLORER_SQL_WHITELIST], sql)
+    fails = [bl_word for bl_word in app_settings.EXPLORER_SQL_BLACKLIST if bl_word in clean.upper()]
+    return not any(fails), fails
 
 
-def execute_query(sql):
-    conn = connections[app_settings.EXPLORER_CONNECTION_NAME] if app_settings.EXPLORER_CONNECTION_NAME else connection
-    cursor = conn.cursor()
-    start_time = time()
-
-    sid = transaction.savepoint()
-    try:
-        cursor.execute(sql)
-        transaction.savepoint_commit(sid)
-    except DatabaseError:
-        transaction.savepoint_rollback(sid)
-        raise
-
-    end_time = time()
-    duration = (end_time - start_time) * 1000
-    return cursor, duration
-
-
-def get_transforms(headers, transforms):
-    relevant_transforms = []
-    for field, template in transforms:
-        try:
-            relevant_transforms.append((headers.index(field), template))
-        except ValueError:
-            pass
-    return relevant_transforms
-
-
-def transform_row(transforms, row):
-    row = [x.encode('utf-8') if type(x) is unicode else x for x in list(row)]
-    for i, t in transforms:
-        row[i] = t.format(str(row[i]))
-    return row
+def get_connection():
+    return connections[app_settings.EXPLORER_CONNECTION_NAME] if app_settings.EXPLORER_CONNECTION_NAME else connection
 
 
 def schema_info():
@@ -71,30 +47,33 @@ def schema_info():
 
     """
 
-    ret = []
-    apps = [a for a in models.get_apps() if a.__package__ not in app_settings.EXPLORER_SCHEMA_EXCLUDE_APPS]
-    for app in apps:
-        for model in models.get_models(app):
-            friendly_model = "%s -> %s" % (app.__package__, model._meta.object_name)
-            ret.append((
-                          friendly_model,
-                          model._meta.db_table,
-                          [_format_field(f) for f in model._meta.fields]
-                      ))
+    from django.apps import apps
 
-            # Do the same thing for many_to_many fields. These don't show up in the field list of the model
-            # because they are stored as separate "through" relations and have their own tables
-            ret += [(
-                       friendly_model,
-                       m2m.rel.through._meta.db_table,
-                       [_format_field(f) for f in m2m.rel.through._meta.fields]
-                    ) for m2m in model._meta.many_to_many]
+    ret = []
+
+    for label, app in apps.app_configs.items():
+        if app.name not in app_settings.EXPLORER_SCHEMA_EXCLUDE_APPS:
+            for model_name, model in apps.get_app_config(label).models.items():
+                friendly_model = "%s -> %s" % (app.name, model._meta.object_name)
+                ret.append((
+                              friendly_model,
+                              model._meta.db_table,
+                              [_format_field(f) for f in model._meta.fields]
+                          ))
+
+                # Do the same thing for many_to_many fields. These don't show up in the field list of the model
+                # because they are stored as separate "through" relations and have their own tables
+                ret += [(
+                           friendly_model,
+                           m2m.rel.through._meta.db_table,
+                           [_format_field(f) for f in m2m.rel.through._meta.fields]
+                        ) for m2m in model._meta.many_to_many]
 
     return sorted(ret, key=lambda t: t[1])
 
 
 def _format_field(field):
-    return (field.get_attname_column()[1], field.get_internal_type())
+    return field.get_attname_column()[1], field.get_internal_type()
 
 
 def param(name):
@@ -104,22 +83,32 @@ def param(name):
 def swap_params(sql, params):
     p = params.items() if params else {}
     for k, v in p:
-        sql = sql.replace(param(k), str(v))
+        regex = re.compile("\$\$%s(?:\:([^\$]+))?\$\$" % str(k).lower())
+        sql = regex.sub(str(v), sql.lower())
     return sql
 
 
 def extract_params(text):
-    regex = re.compile("\$\$([a-zA-Z0-9_|-]+)\$\$")
-    params = re.findall(regex, text)
-    return dict(zip(params, ['' for i in range(len(params))]))
+    regex = re.compile("\$\$([a-z0-9_]+)(?:\:([^\$]+))?\$\$")
+    params = re.findall(regex, text.lower())
+    # We support Python 2.6 so can't use a dict comprehension
+    return dict(zip([p[0] for p in params], [p[1] if len(p) > 1 else '' for p in params]))
 
 
-def write_csv(headers, data):
-    csv_data = cStringIO.StringIO()
-    writer = csv.writer(csv_data)
+def write_csv(headers, data, delim=None):
+    if delim and len(delim) == 1 or delim == 'tab':
+        delim = '\t' if delim == 'tab' else str(delim)
+    else:
+        delim = app_settings.CSV_DELIMETER
+    csv_data = cStringIO()
+    if PY3:
+        writer = csv.writer(csv_data, delimiter=delim)
+    else:
+        writer = csv.writer(csv_data, delimiter=delim, encoding='utf-8')
     writer.writerow(headers)
-    map(lambda row: writer.writerow(row), data)
-    return csv_data.getvalue()
+    for row in data:
+        writer.writerow([s for s in row])
+    return csv_data
 
 
 def get_filename_for_title(title):
@@ -130,14 +119,14 @@ def get_filename_for_title(title):
     return filename
 
 
-def build_stream_response(query):
-    data = csv_report(query)
+def build_stream_response(query, delim=None):
+    data = csv_report(query, delim).getvalue()
     response = HttpResponse(data, content_type='text')
     return response
 
 
-def build_download_response(query):
-    data = csv_report(query)
+def build_download_response(query, delim=None):
+    data = csv_report(query, delim).getvalue()
     response = HttpResponse(data, content_type='text/csv')
     response['Content-Disposition'] = 'attachment; filename="%s.csv"' % (
         get_filename_for_title(query.title)
@@ -146,9 +135,13 @@ def build_download_response(query):
     return response
 
 
-def csv_report(query):
-    res = query.headers_and_data()
-    return res.error if res.error else write_csv(res.headers, res.data)
+def csv_report(query, delim=None):
+    try:
+        res = query.execute_query_only()
+        return write_csv(res.headers, res.data, delim)
+    except DatabaseError as e:
+        resp = cStringIO()
+        return resp.write(str(e))  # consistent return type
 
 
 # Helpers
@@ -184,21 +177,22 @@ def safe_cast(val, to_type, default=None):
         return default
 
 
-def safe_json(val):
-    try:
-        return json.loads(val)
-    except ValueError:
-        return None
-
-
 def get_int_from_request(request, name, default):
     val = request.GET.get(name, default)
     return safe_cast(val, int, default) if val else None
 
 
-def get_json_from_request(request, name):
-    val = request.GET.get(name, None)
-    return safe_json(val) if val else None
+def get_params_from_request(request):
+    val = request.GET.get('params', None)
+    try:
+        d = {}
+        tuples = val.split('|')
+        for t in tuples:
+            res = t.split(':')
+            d[res[0]] = res[1]
+        return d
+    except Exception:
+        return None
 
 
 def url_get_rows(request):
@@ -213,16 +207,34 @@ def url_get_log_id(request):
     return get_int_from_request(request, 'querylog_id', None)
 
 
+def url_get_show(request):
+    return bool(get_int_from_request(request, 'show', 1))
+
+
 def url_get_params(request):
-    return get_json_from_request(request, 'params')
+    return get_params_from_request(request)
+
+
+def allowed_query_pks(user_id):
+    return app_settings.EXPLORER_GET_USER_QUERY_VIEWS().get(user_id, [])
 
 
 def user_can_see_query(request, kwargs):
     if not request.user.is_anonymous() and 'query_id' in kwargs:
-        allowed_queries = app_settings.EXPLORER_GET_USER_QUERY_VIEWS().get(request.user.id, [])
-        return int(kwargs['query_id']) in allowed_queries
+        return int(kwargs['query_id']) in allowed_query_pks(request.user.id)
     return False
 
 
 def fmt_sql(sql):
     return sqlparse.format(sql, reindent=True, keyword_case='upper')
+
+
+def noop_decorator(f):
+    return f
+
+
+def get_s3_connection():
+    import tinys3
+    return tinys3.Connection(app_settings.S3_ACCESS_KEY,
+                             app_settings.S3_SECRET_KEY,
+                             default_bucket=app_settings.S3_BUCKET)

@@ -11,19 +11,25 @@ function ExplorerEditor(queryId, dataUrl) {
     this.$table = $('#preview');
     this.$rows = $('#rows');
     this.$form = $("form");
+    this.$snapshotField = $("#id_snapshot");
     this.$paramFields = this.$form.find(".param");
 
-    this.$submit = $("#save_button");
+    this.$submit = $("#refresh_play_button, #save_button");
     if (!this.$submit.length) { this.$submit = $("#refresh_button"); }
 
     this.editor = CodeMirror.fromTextArea(document.getElementById('id_sql'), {
         mode: "text/x-sql",
         lineNumbers: 't',
         autofocus: true,
+        height: 500,
         extraKeys: {
             "Ctrl-Enter": function() { this.doCodeMirrorSubmit(); }.bind(this),
-            "Cmd-Enter": function() { this.doCodeMirrorSubmit(); }.bind(this)
+            "Cmd-Enter": function() { this.doCodeMirrorSubmit(); }.bind(this),
+            "Cmd-/": function() { this.editor.toggleComment(); }.bind(this)
         }
+    });
+    this.editor.on("change", function(cm, change) {
+        document.getElementById('id_sql').classList.add('changed-input');
     });
     this.bind();
 }
@@ -33,15 +39,29 @@ ExplorerEditor.prototype.getParams = function() {
     if(this.$paramFields.length) {
         o = {};
         this.$paramFields.each(function() {
-            o[this.id.replace("_param", "")] = $(this).val();
+            o[$(this).data('param')] = $(this).val();
         });
     }
     return o;
 };
 
+ExplorerEditor.prototype.serializeParams = function(params) {
+    var args = [];
+    for(var key in params) {
+        args.push(key + '%3A' + params[key]);
+    }
+    return args.join('%7C');
+};
+
 ExplorerEditor.prototype.doCodeMirrorSubmit = function() {
     // Captures the cmd+enter keystroke and figures out which button to trigger.
     this.$submit.click();
+};
+
+ExplorerEditor.prototype.savePivotState = function(state) {
+    bmark = btoa(JSON.stringify(_(state).pick('aggregatorName', 'rows', 'cols', 'rendererName', 'vals')));
+    $el = $('#pivot-bookmark')
+    $el.attr('href', $el.data('baseurl') + '#' + bmark)
 };
 
 ExplorerEditor.prototype.updateQueryString = function(key, value, url) {
@@ -114,31 +134,31 @@ ExplorerEditor.prototype.bind = function() {
         this.formatSql();
     }.bind(this));
 
-    $('a[data-toggle="tab"]').on('shown.bs.tab', function (e) {
-        if(e.target.hash == "#chart") {
-            var pageController = new PageController();
-            pageController.setupPage({dataUrl: this.dataUrl})
-        }
-    }.bind(this));
-
     $("#save_button").click(function() {
         var params = this.getParams(this);
         if(params) {
-            this.$form.attr('action', '../' + this.queryId + '/?params=' + JSON.stringify(params));
+            this.$form.attr('action', '../' + this.queryId + '/?params=' + this.serializeParams(params));
         }
+        this.$snapshotField.hide();
+        this.$form.append(this.$snapshotField);
     }.bind(this));
 
     $("#refresh_button").click(function(e) {
         e.preventDefault();
         var params = this.getParams();
         if(params) {
-            window.location.href = '../' + this.queryId + '/?params=' + JSON.stringify(params);
+            window.location.href = '../' + this.queryId + '/?params=' + this.serializeParams(params);
         } else {
             window.location.href = '../' + this.queryId + '/';
         }
     }.bind(this));
 
-    $("#refresh_play_button, #playground_button").click(function() {
+    $("#refresh_play_button").click(function() {
+        this.$form.attr('action', '../play/');
+    }.bind(this));
+
+    $("#playground_button").click(function() {
+        this.$form.prepend("<input type=hidden name=show value='' />");
         this.$form.attr('action', '../play/');
     }.bind(this));
 
@@ -150,13 +170,62 @@ ExplorerEditor.prototype.bind = function() {
         e.preventDefault();
         var dl_link = 'download';
         var params = this.getParams(this);
-        if(params) { dl_link = dl_link + '?params=' + JSON.stringify(params); }
+        if(params) { dl_link = dl_link + '?params=' + this.serializeParams(params); }
         window.open(dl_link, '_blank');
     }.bind(this));
 
     $("#create_button").click(function() {
         this.$form.attr('action', '../new/');
     }.bind(this));
+
+    $(".stats-expand").click(function(e) {
+        e.preventDefault();
+        $(".stats-expand").hide();
+        $(".stats-wrapper").show();
+        this.$table.floatThead('reflow');
+    }.bind(this));
+
+    $(".sort").click(function(e) {
+        var t = $(e.target).data('sort');
+        var dir = $(e.target).data('dir');
+        $('.sort').css('background-image', 'url(http://cdn.datatables.net/1.10.0/images/sort_both.png)')
+        if (dir == 'asc'){
+            $(e.target).data('dir', 'desc');
+            $(e.target).css('background-image', 'url(http://cdn.datatables.net/1.10.0/images/sort_asc.png)')
+        } else {
+            $(e.target).data('dir', 'asc');
+            $(e.target).css('background-image', 'url(http://cdn.datatables.net/1.10.0/images/sort_desc.png)')
+        }
+        var vals = [];
+        var ct = 0;
+        while (ct < this.$table.find('th').length) {
+           vals.push(ct++);
+        }
+        var options = {
+            valueNames: vals
+        };
+        var tableList = new List('preview', options);
+        tableList.sort(t, { order: dir });
+    }.bind(this));
+
+    $("#preview-tab-label").click(function() {
+        this.$table.floatThead('reflow');
+    }.bind(this));
+
+    var pivotState = window.location.hash;
+    var navToPivot = false;
+    if (!pivotState) {
+        pivotState = {onRefresh: this.savePivotState};
+    } else {
+        pivotState = JSON.parse(atob(pivotState.substr(1)));
+        pivotState['onRefresh'] = this.savePivotState;
+        navToPivot = true;
+    }
+
+    $(".pivot-table").pivotUI(this.$table, pivotState);
+    if (navToPivot) {
+        $("#pivot-tab-label").tab('show');
+    }
 
     this.$table.floatThead({
         scrollContainer: function() {
@@ -165,7 +234,20 @@ ExplorerEditor.prototype.bind = function() {
     });
 
     this.$rows.change(function() { this.showRows(); }.bind(this));
-    this.$rows.keyup(function(event){
+    this.$rows.keyup(function(event) {
         if(event.keyCode == 13){ this.showRows(); }
     }.bind(this));
 };
+
+$(window).on('beforeunload', function () {
+    // Only do this if changed-input is on the page and we're not on the playground page.
+    if ($('.changed-input').length && !$('.playground-form').length) {
+        return 'You have unsaved changes to your query.';
+    }
+});
+
+// Disable unsaved changes warning when submitting the editor form
+$(document).on("submit", "#editor", function(event){
+    // disable warning
+    $(window).off('beforeunload');
+});

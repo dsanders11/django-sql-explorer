@@ -14,41 +14,6 @@
     table-layout: fixed;
 }
 
-.query-area h2 {
-    padding-bottom: 20px;
-}
-
-.sql-panel {
-    margin-top: 30px;
-}
-
-.tip {
-    text-align: right;
-    margin-top: -20px;
-}
-
-.btn-group-wrap {
-    text-align: center;
-}
-
-.schema-frame {
-    display: none;
-    top: 43px;
-}
-
-#hide_schema_button {
-    display: none;
-}
-
-.charts {
-    overflow: auto;
-    height: 500px;
-}
-
-.row-control {
-    float: right;
-}
-
 .rows-input {
     text-align: center;
     width: 40px;
@@ -58,12 +23,12 @@
     overflow: auto; height: 500px;
 }
 
-.data-headers {
-    background: white;
+.list-search {
+    margin-top: 20px;
 }
 
-.center {
-    text-align: center;
+.data-headers {
+    background: white;
 }
 
 .log-sql {
@@ -72,34 +37,11 @@
 
 .list {
     -webkit-padding-start: 0px;
-}
-
-#footer {
-    padding-top: 20px;
+    list-style: none;
 }
 
 .wrap {
     overflow: hidden; /* for schema navigator */
-}
-
-.icon-cell {
-    padding: 2px 0 0 45px;
-    vertical-align: middle;
-    text-align: center;
-}
-
-.icon-cell a {
-    font-size: 20px;
-}
-
-.search {
-    width: 250px;
-    margin-top: 30px;
-    margin-left: 30px;
-}
-
-.querylist-header {
-    float: left;
 }
 
 .toggle {
@@ -112,6 +54,53 @@
     padding-left: 30px;
 }
 
-#editor #id_description {
-    resize: vertical;
+.stats-wrapper {
+    width: 120px;
+    display: none;
+}
+
+.stat-wrapper {
+    float: left;
+    width: 120px;
+}
+
+.stat-label {
+    width: 50%;
+    font-weight: 300;
+}
+
+.stat-value {
+    width: 50%;
+    font-weight: 500;
+}
+
+.stats-expand {
+    cursor: pointer;
+    padding-left: 5px;
+}
+
+.data-row {
+    white-space: pre;
+}
+
+.CodeMirror {
+    height: 400px;
+}
+
+.table>thead>tr>th.preview-header {
+    vertical-align: top;
+}
+
+span.sort {
+    background: url('//cdn.datatables.net/1.10.0/images/sort_both.png') no-repeat;
+    cursor: pointer;
+    padding-left: 20px;
+}
+
+.pivot-table {
+    padding: 15px;
+}
+
+.pvtAxisContainer, .pvtVals {
+    border-color: #ddd;
 }

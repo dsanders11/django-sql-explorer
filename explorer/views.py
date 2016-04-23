@@ -1,6 +1,8 @@
+from explorer.tasks import execute_query
+import six
+
 from django.http.response import HttpResponseRedirect
 from django.shortcuts import render_to_response, get_object_or_404
-from django.template import RequestContext
 from django.views.generic.base import View
 from django.views.generic import ListView
 from django.views.generic.edit import CreateView, DeleteView
@@ -9,8 +11,10 @@ from django.utils.decorators import method_decorator
 from django.core.urlresolvers import reverse_lazy
 from django.forms.models import model_to_dict
 from django.http import HttpResponse
+from django.db import DatabaseError
+from django.db.models import Count
 
-from explorer.models import Query, QueryLog
+from explorer.models import Query, QueryLog, MSG_FAILED_BLACKLIST
 from explorer import app_settings
 from explorer.forms import QueryForm
 from explorer.utils import url_get_rows,\
@@ -22,7 +26,9 @@ from explorer.utils import url_get_rows,\
     build_download_response,\
     build_stream_response,\
     user_can_see_query,\
-    fmt_sql
+    fmt_sql,\
+    allowed_query_pks,\
+    url_get_show
 
 try:
     from collections import Counter
@@ -42,6 +48,19 @@ def view_permission(f):
                 and not user_can_see_query(request, kwargs)\
                 and not (app_settings.EXPLORER_TOKEN_AUTH_ENABLED()
                          and request.META.get('HTTP_X_API_TOKEN') == app_settings.EXPLORER_TOKEN):
+            return safe_admin_login_prompt(request)
+        return f(request, *args, **kwargs)
+    return wrap
+
+
+# Users who can only see some queries can still see the list.
+# Different than the above because it's not checking for any specific query permissions.
+# And token auth does not give you permission to view the list.
+def view_permission_list(f):
+    @wraps(f)
+    def wrap(request, *args, **kwargs):
+        if not app_settings.EXPLORER_PERMISSION_VIEW(request.user)\
+                and not allowed_query_pks(request.user.id):
             return safe_admin_login_prompt(request)
         return f(request, *args, **kwargs)
     return wrap
@@ -75,19 +94,30 @@ class ExplorerContextMixin(object):
 @view_permission
 @require_GET
 def download_query(request, query_id):
-    return _csv_response(request, query_id, False)
+    return _csv_response(request, query_id, False, delim=request.GET.get('delim', None))
 
 
 @view_permission
 @require_GET
 def view_csv_query(request, query_id):
-    return _csv_response(request, query_id, True)
+    return _csv_response(request, query_id, True, delim=request.GET.get('delim', None))
 
 
-def _csv_response(request, query_id, stream=False):
+@view_permission
+@require_POST
+def email_csv_query(request, query_id):
+    if request.is_ajax():
+        email = request.POST.get('email', None)
+        if email:
+            execute_query.delay(query_id, email)
+            return HttpResponse(content={'message': 'message was sent successfully'})
+    return HttpResponse(status=403)
+
+
+def _csv_response(request, query_id, stream=False, delim=None):
     query = get_object_or_404(Query, pk=query_id)
     query.params = url_get_params(request)
-    return build_stream_response(query) if stream else build_download_response(query)
+    return build_stream_response(query, delim) if stream else build_download_response(query, delim)
 
 
 @change_permission
@@ -112,15 +142,23 @@ def format_sql(request):
 
 class ListQueryView(ExplorerContextMixin, ListView):
 
-    @method_decorator(view_permission)
+    @method_decorator(view_permission_list)
     def dispatch(self, *args, **kwargs):
         return super(ListQueryView, self).dispatch(*args, **kwargs)
 
     def get_context_data(self, **kwargs):
         context = super(ListQueryView, self).get_context_data(**kwargs)
         context['object_list'] = self._build_queries_and_headers()
-        context['recent_queries'] = Query.objects.all().order_by('-last_run_date')[:app_settings.EXPLORER_RECENT_QUERY_COUNT]
+        context['recent_queries'] = self.get_queryset().order_by('-last_run_date')[:app_settings.EXPLORER_RECENT_QUERY_COUNT]
+        context['tasks_enabled'] = app_settings.ENABLE_TASKS
         return context
+
+    def get_queryset(self):
+        if app_settings.EXPLORER_PERMISSION_VIEW(self.request.user):
+            qs = Query.objects.prefetch_related('created_by_user').all()
+        else:
+            qs = Query.objects.prefetch_related('created_by_user').filter(pk__in=allowed_query_pks(self.request.user.id))
+        return qs.annotate(run_count=Count('querylog'))
 
     def _build_queries_and_headers(self):
         """
@@ -161,7 +199,8 @@ class ListQueryView(ExplorerContextMixin, ListView):
             model_dict.update({'is_in_category': headers[header] > 1,
                                'collapse_target': collapse_target,
                                'created_at': q.created_at,
-                               'created_by_user': q.created_by_user.__unicode__ if q.created_by_user else None})
+                               'run_count': q.run_count,
+                               'created_by_user': six.text_type(q.created_by_user) if q.created_by_user else None})
             dict_list.append(model_dict)
         return dict_list
 
@@ -173,6 +212,9 @@ class ListQueryLogView(ExplorerContextMixin, ListView):
     @method_decorator(view_permission)
     def dispatch(self, *args, **kwargs):
         return super(ListQueryLogView, self).dispatch(*args, **kwargs)
+
+    def get_queryset(self):
+        return QueryLog.objects.filter(sql__isnull=False).all()
 
     context_object_name = "recent_logs"
     model = QueryLog
@@ -212,7 +254,7 @@ class PlayQueryView(ExplorerContextMixin, View):
     def get(self, request):
         if url_get_query_id(request):
             query = get_object_or_404(Query, pk=url_get_query_id(request))
-            return self.render_with_sql(request, query)
+            return self.render_with_sql(request, query, run_query=False)
 
         if url_get_log_id(request):
             log = get_object_or_404(QueryLog, pk=url_get_log_id(request))
@@ -223,15 +265,19 @@ class PlayQueryView(ExplorerContextMixin, View):
 
     def post(self, request):
         sql = request.POST.get('sql')
+        show_results = request.POST.get('show', True)
         query = Query(sql=sql, title="Playground")
-        query.log(request.user)
-        return self.render_with_sql(request, query)
+        passes_blacklist, failing_words = query.passes_blacklist()
+        error = MSG_FAILED_BLACKLIST % ', '.join(failing_words) if not passes_blacklist else None
+        run_query = not bool(error) if show_results else False
+        return self.render_with_sql(request, query, run_query=run_query, error=error)
 
     def render(self, request):
-        return self.render_template('explorer/play.html', RequestContext(request, {'title': 'Playground'}))
+        return self.render_template('explorer/play.html', {'title': 'Playground'})
 
-    def render_with_sql(self, request, query):
-        return self.render_template('explorer/play.html', query_viewmodel(request, query, title="Playground"))
+    def render_with_sql(self, request, query, run_query=True, error=None):
+        return self.render_template('explorer/play.html', query_viewmodel(request, query, title="Playground"
+                                                                          , run_query=run_query, error=error))
 
 
 class QueryView(ExplorerContextMixin, View):
@@ -243,7 +289,8 @@ class QueryView(ExplorerContextMixin, View):
     def get(self, request, query_id):
         query, form = QueryView.get_instance_and_form(request, query_id)
         query.save()  # updates the modified date
-        vm = query_viewmodel(request, query, form=form)
+        show = url_get_show(request)  # if a query is timing out, it can be useful to nav to /query/id/?show=0
+        vm = query_viewmodel(request, query, form=form, run_query=show)
         return self.render_template('explorer/query.html', vm)
 
     def post(self, request, query_id):
@@ -254,8 +301,6 @@ class QueryView(ExplorerContextMixin, View):
 
         query, form = QueryView.get_instance_and_form(request, query_id)
         success = form.is_valid() and form.save()
-        if form.has_changed():
-            query.log(request.user)
         vm = query_viewmodel(request, query, form=form, message="Query saved." if success else None)
         return self.render_template('explorer/query.html', vm)
 
@@ -267,19 +312,33 @@ class QueryView(ExplorerContextMixin, View):
         return query, form
 
 
-def query_viewmodel(request, query, title=None, form=None, message=None):
+def query_viewmodel(request, query, title=None, form=None, message=None, run_query=True, error=None):
     rows = url_get_rows(request)
-    res = query.headers_and_data()
-    return RequestContext(request, {
-            'error': res.error,
+    res = None
+    ql = None
+    if run_query:
+        try:
+            res, ql = query.execute_with_logging(request.user)
+        except DatabaseError as e:
+            error = str(e)
+    has_valid_results = not error and res and run_query
+    ret = {
+            'tasks_enabled': app_settings.ENABLE_TASKS,
             'params': query.available_params(),
             'title': title,
+            'shared': query.shared,
             'query': query,
             'form': form,
             'message': message,
-            'data': res.data[:rows],
-            'headers': res.headers,
-            'duration': res.duration,
+            'error': error,
             'rows': rows,
-            'total_rows': len(res.data),
-            'dataUrl': reverse_lazy('query_csv', kwargs={'query_id': query.id}) if query.id else ''})
+            'data': res.data[:rows] if has_valid_results else None,
+            'headers': res.headers if has_valid_results else None,
+            'total_rows': len(res.data) if has_valid_results else None,
+            'duration': res.duration if has_valid_results else None,
+            'has_stats': len([h for h in res.headers if h.summary]) if has_valid_results else False,
+            'dataUrl': reverse_lazy('query_csv', kwargs={'query_id': query.id}) if query.id else '',
+            'bucket': app_settings.S3_BUCKET,
+            'snapshots': query.snapshots if query.snapshot else [],
+            'ql_id': ql.id if ql else None}
+    return ret

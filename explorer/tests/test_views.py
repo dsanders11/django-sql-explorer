@@ -1,14 +1,18 @@
 from django.test import TestCase
 from django.core.urlresolvers import reverse
 from django.contrib.auth.models import User
+from django.conf import settings
 from django.forms.models import model_to_dict
 from explorer.tests.factories import SimpleQueryFactory, QueryLogFactory
-from explorer.models import Query, QueryLog
+from explorer.models import Query, QueryLog, MSG_FAILED_BLACKLIST
 from explorer.views import user_can_see_query
 from explorer.app_settings import EXPLORER_TOKEN
-from mock import Mock
+from mock import Mock, patch
 import time
 import json
+
+
+_ = lambda x: x
 
 
 class TestQueryListView(TestCase):
@@ -31,6 +35,25 @@ class TestQueryListView(TestCase):
         self.assertContains(resp, 'foo (3)')
         self.assertContains(resp, 'foo - bar2')
         self.assertContains(resp, 'qux - mux')
+
+    def test_permissions_show_only_allowed_queries(self):
+        self.client.logout()
+        q1 = SimpleQueryFactory(title='canseethisone')
+        q2 = SimpleQueryFactory(title='nope')
+        user = User.objects.create_user('user', 'user@user.com', 'pwd')
+        self.client.login(username='user', password='pwd')
+        with self.settings(EXPLORER_USER_QUERY_VIEWS={user.id: [q1.id]}):
+            resp = self.client.get(reverse("explorer_index"))
+        self.assertTemplateUsed(resp, 'explorer/query_list.html')
+        self.assertContains(resp, q1.title)
+        self.assertNotContains(resp, q2.title)
+
+    def test_run_count(self):
+        q = SimpleQueryFactory(title='foo - bar1')
+        for i in range(0, 4):
+            q.log()
+        resp = self.client.get(reverse("explorer_index"))
+        self.assertContains(resp, '<td>4</td>')
 
 
 class TestQueryCreateView(TestCase):
@@ -93,6 +116,12 @@ class TestQueryDetailView(TestCase):
         self.client.get(reverse("query_detail", kwargs={'query_id': query.id}))
         self.assertNotEqual(old, Query.objects.get(pk=query.id).last_run_date)
 
+    def test_doesnt_render_results_if_show_is_none(self):
+        query = SimpleQueryFactory(sql='select 6870+1;')
+        resp = self.client.get(reverse("query_detail", kwargs={'query_id': query.id}) + '?show=0')
+        self.assertTemplateUsed(resp, 'explorer/query.html')
+        self.assertNotContains(resp, '6871')
+
     def test_admin_required(self):
         self.client.logout()
         query = SimpleQueryFactory()
@@ -104,22 +133,22 @@ class TestQueryDetailView(TestCase):
         user = User.objects.create_user('user1', 'user@user.com', 'pwd')
         self.client.login(username='user1', password='pwd')
 
-        query = SimpleQueryFactory(sql="select 123")
+        query = SimpleQueryFactory(sql="select 123+1")
 
         with self.settings(EXPLORER_USER_QUERY_VIEWS={user.id: [query.id]}):
             resp = self.client.get(reverse("query_detail", kwargs={'query_id': query.id}))
         self.assertTemplateUsed(resp, 'explorer/query.html')
-        self.assertContains(resp, "123")
+        self.assertContains(resp, "124")
 
     def test_token_auth(self):
         self.client.logout()
 
-        query = SimpleQueryFactory(sql="select 123")
+        query = SimpleQueryFactory(sql="select 123+1")
 
         with self.settings(EXPLORER_TOKEN_AUTH_ENABLED=True):
             resp = self.client.get(reverse("query_detail", kwargs={'query_id': query.id}), **{'HTTP_X_API_TOKEN': EXPLORER_TOKEN})
         self.assertTemplateUsed(resp, 'explorer/query.html')
-        self.assertContains(resp, "123")
+        self.assertContains(resp, "124")
 
     def test_user_query_views(self):
         request = Mock()
@@ -139,6 +168,38 @@ class TestQueryDetailView(TestCase):
         with self.settings(EXPLORER_USER_QUERY_VIEWS={99: [111, 123]}):
             self.assertTrue(user_can_see_query(request, kwargs))
 
+    @patch('explorer.models.get_s3_connection')
+    def test_query_snapshot_renders(self, mocked_conn):
+        conn = Mock()
+        conn.list = Mock()
+        conn.list.return_value = [{'key': 'foo-snapshot', 'last_modified': '2015-01-01'}
+                                  ,{'key': 'bar-snapshot', 'last_modified': '2015-01-02'}]
+        mocked_conn.return_value = conn
+        query = SimpleQueryFactory(sql="select 1;", snapshot=True)
+        resp = self.client.get(reverse("query_detail", kwargs={'query_id': query.id}))
+        self.assertContains(resp, '2015-01-01')
+        self.assertContains(resp, '2015-01-02')
+        self.assertContains(resp, settings.EXPLORER_S3_BUCKET)
+
+    @patch('explorer.models.get_connection')
+    def test_failing_blacklist_means_query_doesnt_execute(self, mocked_conn):
+        # I should really learn to set up mocks correctly because this CANT be the most efficient way...
+        cursor_result = Mock()
+        cursor_result.fetchall.return_value = []
+        cursor_result.description = [('foo', 'bar')]
+
+        conn = Mock()
+        conn.cursor.return_value = cursor_result
+        mocked_conn.return_value = conn
+
+        query = SimpleQueryFactory(sql="select 1;")
+        resp = self.client.post(reverse("query_detail", kwargs={'query_id': query.id}), data={'sql': "select 'delete';"})
+        self.assertTemplateUsed(resp, 'explorer/query.html')
+        self.assertContains(resp, MSG_FAILED_BLACKLIST % '')
+
+        # Feels fragile, but nor sure how else to access the called-with params of .execute
+        self.assertEqual(conn.cursor.mock_calls[1][1][0], "select 1;")
+
 
 class TestDownloadView(TestCase):
     def setUp(self):
@@ -157,9 +218,21 @@ class TestDownloadView(TestCase):
 
     def test_params_in_download(self):
         q = SimpleQueryFactory(sql="select '$$foo$$';")
-        url = '%s?params=%s' % (reverse("query_download", kwargs={'query_id': q.id}), '{"foo":123}')
+        url = '%s?params=%s' % (reverse("query_download", kwargs={'query_id': q.id}), 'foo:123')
         resp = self.client.get(url)
         self.assertContains(resp, "'123'")
+
+    def test_custom_delim_in_download(self):
+        q = SimpleQueryFactory(sql="select 1, 2;")
+        url = '%s?delim=|' % reverse("query_download", kwargs={'query_id': q.id})
+        resp = self.client.get(url)
+        self.assertContains(resp, "1|2")
+
+    def test_tab_delim_in_download(self):
+        q = SimpleQueryFactory(sql="select 1, 2;")
+        url = '%s?delim=tab' % reverse("query_download", kwargs={'query_id': q.id})
+        resp = self.client.get(url)
+        self.assertContains(resp, "1\t2")
 
 
 class TestQueryPlayground(TestCase):
@@ -180,9 +253,14 @@ class TestQueryPlayground(TestCase):
         self.assertContains(resp, 'select 1;')
 
     def test_playground_renders_with_posted_sql(self):
-        resp = self.client.post(reverse("explorer_playground"), {'sql': 'select 1;'})
+        resp = self.client.post(reverse("explorer_playground"), {'sql': 'select 1+3400;'})
         self.assertTemplateUsed(resp, 'explorer/play.html')
-        self.assertContains(resp, 'select 1;')
+        self.assertContains(resp, '3401')
+
+    def test_playground_doesnt_render_with_posted_sql_if_show_is_none(self):
+        resp = self.client.post(reverse("explorer_playground"), {'sql': 'select 1+3400;', 'show': ''})
+        self.assertTemplateUsed(resp, 'explorer/play.html')
+        self.assertNotContains(resp, '3401')
 
     def test_playground_renders_with_empty_posted_sql(self):
         resp = self.client.post(reverse("explorer_playground"), {'sql': ''})
@@ -203,6 +281,11 @@ class TestQueryPlayground(TestCase):
         querylog = QueryLogFactory()
         resp = self.client.get('%s?querylog_id=%s' % (reverse("explorer_playground"), querylog.id))
         self.assertContains(resp, "FOUR")
+
+    def test_fails_blacklist(self):
+        resp = self.client.post(reverse("explorer_playground"), {'sql': "select 'delete'"})
+        self.assertTemplateUsed(resp, 'explorer/play.html')
+        self.assertContains(resp, MSG_FAILED_BLACKLIST % '')
 
 
 class TestCSVFromSQL(TestCase):
@@ -251,7 +334,7 @@ class TestFormat(TestCase):
 
     def test_returns_formatted_sql(self):
         resp = self.client.post(reverse("format_sql"),  data={"sql": "select * from explorer_query"})
-        resp = json.loads(resp.content)
+        resp = json.loads(resp.content.decode('utf-8'))
         self.assertIn("\n", resp['formatted'])
         self.assertIn("explorer_query", resp['formatted'])
 
@@ -264,25 +347,19 @@ class TestParamsInViews(TestCase):
         self.query = SimpleQueryFactory(sql="select $$swap$$;")
 
     def test_retrieving_query_works_with_params(self):
-        resp = self.client.get(reverse("query_detail", kwargs={'query_id': self.query.id}) + '?params={"swap":123}')
+        resp = self.client.get(reverse("query_detail", kwargs={'query_id': self.query.id}) + '?params=swap:123}')
         self.assertContains(resp, "123")
 
     def test_saving_non_executing_query_with__wrong_url_params_works(self):
         q = SimpleQueryFactory(sql="select $$swap$$;")
         data = model_to_dict(q)
-        url = '%s?params=%s' % (reverse("query_detail", kwargs={'query_id': q.id}), '{"foo":123}')
+        url = '%s?params=%s' % (reverse("query_detail", kwargs={'query_id': q.id}), 'foo:123')
         resp = self.client.post(url, data)
         self.assertContains(resp, 'saved')
 
     def test_users_without_change_permissions_can_use_params(self):
-
-        #old = app_settings.EXPLORER_PERMISSION_CHANGE
-        #app_settings.EXPLORER_PERMISSION_CHANGE = lambda u: False
-
-        resp = self.client.get(reverse("query_detail", kwargs={'query_id': self.query.id}) + '?params={"swap":123}')
+        resp = self.client.get(reverse("query_detail", kwargs={'query_id': self.query.id}) + '?params=swap:123}')
         self.assertContains(resp, "123")
-
-        #app_settings.EXPLORER_PERMISSION_CHANGE = old
 
 
 class TestCreatedBy(TestCase):
@@ -325,22 +402,12 @@ class TestQueryLog(TestCase):
         self.client.post(reverse("query_create"), model_to_dict(query))
         self.assertEqual(0, QueryLog.objects.count())
 
-    def test_changing_query_saves_to_log(self):
+    def test_query_saves_to_log(self):
         query = SimpleQueryFactory()
         data = model_to_dict(query)
         data['sql'] = 'select 12345;'
         self.client.post(reverse("query_detail", kwargs={'query_id': query.id}), data)
         self.assertEqual(1, QueryLog.objects.count())
-
-    def test_unchanged_query_doesnt_save_to_log(self):
-        query = SimpleQueryFactory()
-        self.client.post(reverse("query_detail", kwargs={'query_id': query.id}), model_to_dict(query))
-        self.assertEqual(0, QueryLog.objects.count())
-
-    def test_retrieving_query_doesnt_save_to_log(self):
-        query = SimpleQueryFactory()
-        self.client.get(reverse("query_detail", kwargs={'query_id': query.id}))
-        self.assertEqual(0, QueryLog.objects.count())
 
     def test_query_gets_logged_and_appears_on_log_page(self):
         query = SimpleQueryFactory()
@@ -354,3 +421,9 @@ class TestQueryLog(TestCase):
         self.client.logout()
         resp = self.client.get(reverse("explorer_logs"))
         self.assertTemplateUsed(resp, 'admin/login.html')
+
+    def test_is_playground(self):
+        self.assertTrue(QueryLog(sql='foo').is_playground)
+
+        q = SimpleQueryFactory()
+        self.assertFalse(QueryLog(sql='foo', query_id=q.id).is_playground)
