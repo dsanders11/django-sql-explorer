@@ -104,3 +104,20 @@ span.sort {
 .pvtAxisContainer, .pvtVals {
     border-color: #ddd;
 }
+
+table.query-table tr th:not(:first-of-type),
+table.query-table tr td:not(:first-of-type) {
+    text-align: center;
+}
+
+table.query-table tr td a {
+    color: #428bca;
+}
+
+table.query-table tr td a i {
+    font-size: 18px
+}
+
+#editor #id_description {
+    resize: vertical;
+}

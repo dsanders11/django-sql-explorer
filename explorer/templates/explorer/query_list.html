@@ -12,7 +12,7 @@
 {% block sql_explorer_content %}
     {% if recent_queries|length > 0 %}
         <h3>{{ recent_queries|length }} Most Recently Used</h3>
-        <table class="table table-striped">
+        <table class="table table-striped query-table">
             <thead>
                 <tr>
                     <th>Query</th>
@@ -43,7 +43,7 @@
           <input class="search list-search" placeholder="Search" style="">
         </div>
       </div>
-    <table class="table table-striped">
+    <table class="table table-striped query-table">
         <thead>
             <tr>
                 <th>Query</th>
