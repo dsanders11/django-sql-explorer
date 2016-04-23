@@ -110,7 +110,7 @@ table.query-table tr td:not(:first-of-type) {
     text-align: center;
 }
 
-table.query-table tr td a {
+table.query-table tr td a:not(:hover) {
     color: #428bca;
 }
 
