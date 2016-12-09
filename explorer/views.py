@@ -11,6 +11,7 @@ from django.http import HttpResponse
 from django.http.response import HttpResponseRedirect
 from django.shortcuts import get_object_or_404, render, render_to_response
 from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_POST, require_GET
 from django.views.generic import ListView
 from django.views.generic.base import View
@@ -135,6 +136,7 @@ def email_csv_query(request, query_id):
     return HttpResponse(status=403)
 
 
+@xframe_options_sameorigin
 @change_permission
 @require_GET
 def schema(request):
