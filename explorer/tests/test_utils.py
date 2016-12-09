@@ -2,7 +2,7 @@ from django.test import TestCase
 from explorer.actions import generate_report_action
 from explorer.tests.factories import SimpleQueryFactory
 from explorer import app_settings
-from explorer.utils import passes_blacklist, schema_info, param, swap_params, extract_params,\
+from explorer.utils import passes_blacklist, param, swap_params, extract_params,\
     shared_dict_update, EXPLORER_PARAM_TOKEN, get_params_from_request, get_params_for_url
 from mock import Mock
 
@@ -48,21 +48,6 @@ class TestSqlBlacklist(TestCase):
         self.assertTrue(passes_blacklist(sql)[0])
 
 
-class TestSchemaInfo(TestCase):
-
-    def test_schema_info_returns_valid_data(self):
-        res = schema_info()
-        tables = [a[1] for a in res]
-        self.assertIn('explorer_query', tables)
-
-    def test_app_exclusion_list(self):
-        app_settings.EXPLORER_SCHEMA_EXCLUDE_APPS = ('explorer',)
-        res = schema_info()
-        app_settings.EXPLORER_SCHEMA_EXCLUDE_APPS = ('',)
-        tables = [a[1] for a in res]
-        self.assertNotIn('explorer_query', tables)
-
-
 class TestParams(TestCase):
 
     def test_swappable_params_are_built_correctly(self):
@@ -70,8 +55,8 @@ class TestParams(TestCase):
         self.assertEqual(expected, param('foo'))
 
     def test_params_get_swapped(self):
-        sql = 'please swap $$this$$ and $$THat$$'
-        expected = 'please swap here and there'
+        sql = 'please Swap $$this$$ and $$THat$$'
+        expected = 'please Swap here and there'
         params = {'this': 'here', 'that': 'there'}
         got = swap_params(sql, params)
         self.assertEqual(got, expected)
