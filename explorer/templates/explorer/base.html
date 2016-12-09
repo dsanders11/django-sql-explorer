@@ -8,16 +8,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SQL Explorer{% if query %} - {{ query.title }}{% elif title %} - {{ title }}{% endif %}</title>
 
-    <link href="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/codemirror.min.css" rel="stylesheet" />
-    <link href="//cdnjs.cloudflare.com/ajax/libs/pivottable/2.0.0/pivot.min.css" rel="stylesheet" />
-    <link href="//cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.6/css/bootstrap.min.css" rel="stylesheet" />
-    <link rel="stylesheet" href="{% static 'explorer/explorer.css' %}" />
+    {% block sql_explorer_styles %}
+        <link href="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/codemirror.min.css" rel="stylesheet" />
+        <link href="//cdnjs.cloudflare.com/ajax/libs/pivottable/2.0.0/pivot.min.css" rel="stylesheet" />
+        <link href="//cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.6/css/bootstrap.min.css" rel="stylesheet" />
+        <link rel="stylesheet" href="{% static 'explorer/explorer.css' %}" />
+    {% endblock %}
 
-    <script src="//cdnjs.cloudflare.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+    {% block sql_explorer_js %}
+        <script src="//cdnjs.cloudflare.com/ajax/libs/jquery/2.1.4/jquery.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/jquery-cookie/1.4.1/jquery.cookie.min.js"></script>
+        <script src="{% static 'explorer/jquery-ui.11.4.min.js' %}"></script>
+        <script src="{% static 'explorer/explorer.js' %}"></script>
+    {% endblock %}
 
-    <script src="{% static 'explorer/jquery-ui.11.4.min.js' %}"></script>
-    <script src="{% static 'explorer/explorer.js' %}"></script>
     <script type="text/javascript">
         dataUrl = "{{ dataUrl }}";
         queryId = "{% firstof query.id 'new' %}";
@@ -56,14 +60,16 @@
           </div>
         </div>
     {% endblock %}
-    <script src="//cdnjs.cloudflare.com/ajax/libs/underscore.js/1.7.0/underscore-min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.6/js/bootstrap.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/list.js/1.2.0/list.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/codemirror.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/mode/sql/sql.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/addon/comment/comment.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/floatthead/1.4.0/jquery.floatThead-slim.min.js"></script>
-    <script src="//cdnjs.cloudflare.com/ajax/libs/pivottable/2.0.2/pivot.min.js"></script>
+    {% block sql_explorer_js_deps %}
+        <script src="//cdnjs.cloudflare.com/ajax/libs/underscore.js/1.7.0/underscore-min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/3.3.6/js/bootstrap.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/list.js/1.2.0/list.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/codemirror.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/mode/sql/sql.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/codemirror/5.15.2/addon/comment/comment.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/floatthead/1.4.0/jquery.floatThead-slim.min.js"></script>
+        <script src="//cdnjs.cloudflare.com/ajax/libs/pivottable/2.0.2/pivot.min.js"></script>
+    {% endblock %}
     {% block sql_explorer_scripts %}{% endblock %}
 </body>
 
