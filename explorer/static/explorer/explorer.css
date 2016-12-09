@@ -108,3 +108,7 @@ span.sort {
 #schema_frame {
     border: 0;
 }
+
+.sql {
+    width: 33%;
+}
